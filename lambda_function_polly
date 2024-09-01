@@ -1,0 +1,64 @@
+import json
+import os
+import urllib.parse
+from contextlib import closing
+from boto3 import client
+
+polly = client("polly", region_name="ap-northeast-2")
+s3 = client('s3')
+def lambda_handler(event, context):
+    #print("Received event: " + json.dumps(event, indent=2))
+
+    # Get the object from the event and show its content type
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+    body = ""
+    try:
+        response = s3.get_object(Bucket=bucket, Key=key)
+        #print("CONTENT TYPE: " + response['ContentType'])
+        body = response['Body'].read().decode('utf-8')
+    except Exception as e:
+        print(e)
+        print('Error getting object {} from bucket {}. Make sure they exist and your bucket is in the same region as this function.'.format(key, bucket))
+        raise e
+
+    pollyResponse = polly.synthesize_speech(
+        Text=body,
+        OutputFormat="mp3",
+        VoiceId="Seoyeon")
+    
+    if "AudioStream" in pollyResponse:
+        filename = "speech.mp3"
+        with closing(pollyResponse["AudioStream"]) as stream:
+            filePath = os.path.join("/tmp/", filename)
+            with open(filePath, "wb") as file:
+                file.write(stream.read())
+
+                # Host the file on S3 that is accessed by a pre-signed url
+                signedURL = hostFileOnS3(s3, filePath, bucket)
+    
+    return {
+        'statusCode': 200,
+        'body': ''
+    }
+
+def hostFileOnS3(s3Client, filePath, mp3Bucket):
+    print("hostFileOnS3 Function")
+    
+    s3Client.upload_file(filePath,
+                         mp3Bucket,
+                         'speech.mp3')
+
+    # Remove the file from the temp location to avoid potential data leaks
+    os.remove(filePath)
+
+    # Generate a pre-signed URL to access the MP3 object
+    url = s3Client.generate_presigned_url(
+        ClientMethod='get_object',
+        Params={
+            'Bucket': mp3Bucket,
+            'Key': 'speech.mp3'
+        }
+    )
+
+    return url
